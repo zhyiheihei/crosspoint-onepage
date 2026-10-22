@@ -37,6 +37,9 @@
 #include "images/LoadingIcon.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include <esp_heap_caps.h>
+#include <esp_psram.h>
+#include <mbedtls/platform.h>
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -325,6 +328,12 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+static void* psramCalloc(size_t n, size_t size) {
+  void* p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (p == nullptr) p = heap_caps_calloc(n, size, MALLOC_CAP_DEFAULT);
+  return p;
+}
+
 void setup() {
   t1 = millis();
 
@@ -338,6 +347,17 @@ void setup() {
   Serial.begin(115200);
   logSerial.setTxTimeoutMs(1);  // This is a load-bearing 1. Do not modify.
 #endif
+
+  // local diagnostic (not upstream): report how much RAM each region exposes
+  LOG_INF("MEM", "internal total=%u free=%u", (unsigned)heap_caps_get_total_size(MALLOC_CAP_INTERNAL),
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  LOG_INF("MEM", "spiram init=%d size=%u heap=%u", (int)esp_psram_is_initialized(),
+          (unsigned)esp_psram_get_size(), (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+
+  // local fix (not upstream): the prebuilt IDF libs ship MBEDTLS internal-mem-only
+  // allocation, so esp-tls dies at mbedtls_ssl_setup (-0x7F00) once WiFi has eaten
+  // the 156 KB internal heap. Point mbedTLS at the 8 MB PSRAM pool instead.
+  mbedtls_platform_set_calloc_free(psramCalloc, heap_caps_free);
 
   HalSystem::begin();
 
